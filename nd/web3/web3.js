@@ -28,12 +28,18 @@ export const ETHEREUM_NETWORKS = {
   "4": "rinkby",
   "42": "kovan"
 }
+const web3 = new Web3()
+export const isAddress = address => web3.utils.isAddress(address)
 
-export const isAddress = address => window.web3.utils.isAddress(address)
+export const toWei = amount => web3.utils.toWei(amount)
 
-export const toWei = amount => window.web3.utils.toWei(amount)
+export const fromWei = amount => web3.utils.fromWei(amount)
 
-export const fromWei = amount => window.web3.utils.fromWei(amount)
+export const fromAscii = text => web3.utils.fromAscii(text)
+
+export const randomHex = num => web3.utils.randomHex(num)
+
+export const toAscii = text => web3.utils.toAscii(text)
 
 export async function setETH({
   val: { network, new_address, wallet },
@@ -49,9 +55,9 @@ export async function setETH({
   if (global.wallet_in_use !== wallet) {
     return
   }
-
-  if (!isNil(global[`web3_${wallet}`].currentProvider)) {
-    if (global[`web3_${wallet}`].currentProvider.isAuthereum) {
+  let provider = global[`web3_${wallet}`].currentProvider
+  if (!isNil(provider)) {
+    if (provider.isAuthereum) {
       current_network = conf.web3.network
       const accounts = await global[`web3_${wallet}`].eth.getAccounts()
       if (accounts.length !== 0) {
@@ -60,16 +66,14 @@ export async function setETH({
         balance = await global[`web3_${wallet}`].eth.getBalance(web3_address)
       }
     } else {
-      current_network =
-        global[`web3_${wallet}`].currentProvider.networkVersion ||
-        global[`web3_${wallet}`].currentProvider._network
+      current_network = provider.networkVersion || provider._network
       if (current_network === (network || conf.web3.network)) {
         wallet_in_use = wallet
         web3_address =
-          new_address ||
-          global[`web3_${wallet}`].currentProvider.selectedAddress ||
-          global[`web3_${wallet}`].currentProvider._selectedAddress
-        balance = await global[`web3_${wallet}`].eth.getBalance(web3_address)
+          new_address || provider.selectedAddress || provider._selectedAddress
+        if (!isNil(web3_address)) {
+          balance = await global[`web3_${wallet}`].eth.getBalance(web3_address)
+        }
       }
     }
   }
@@ -124,6 +128,7 @@ export async function disconnectWeb3({ set, global }) {
       console.log(e)
     }
   }
+  delete global[`web3_${global.wallet_in_use}`]
   global.wallet_in_use = null
   set({
     web3_init: false,
@@ -142,28 +147,32 @@ async function listen_changes({
   val: { wallet, network, web3 }
 }) {
   let init = true
-  if (complement(isNil)(web3) && isNil(global[`web3_listener_${wallet}`])) {
+  if (!isNil(web3)) {
     fn(setETH)({ network, wallet })
-    if (!isNil(web3.currentProvider.publicConfigStore)) {
-      global[
-        `web3_listener_${wallet}`
-      ] = web3.currentProvider.publicConfigStore.on("update", c => {
-        if (init === true || get("web3_init") === true) {
-          init = false
-          fn(setETH)({ network, wallet })
-        }
-      })
-    } else if (!isNil(window.ethereum)) {
-      window.ethereum.on("chainChanged", c => window.location.reload())
-      global[`web3_listener_${wallet}`] = window.ethereum.on("message", c => {
-        if (init === true || get("web3_init") === true) {
-          init = false
-          fn(setETH)({ network, wallet })
-        }
-      })
-      window.ethereum.on("accountsChanged", accounts =>
-        fn(setETH)({ network, new_address: accounts[0], wallet })
-      )
+    if (!isNil(window.ethereum)) {
+      if (isNil(global[`web3_listener_${wallet}`])) {
+        window.ethereum.on("chainChanged", c => window.location.reload())
+        global[`web3_listener_${wallet}`] = window.ethereum.on("message", c => {
+          if (init === true || get("web3_init") === true) {
+            init = false
+            fn(setETH)({ network, wallet })
+          }
+        })
+        window.ethereum.on("accountsChanged", accounts => {
+          fn(setETH)({ network, new_address: accounts[0], wallet })
+        })
+      }
+    } else if (!isNil(web3.currentProvider.publicConfigStore)) {
+      if (isNil(global[`web3_listener_${wallet}`])) {
+        global[
+          `web3_listener_${wallet}`
+        ] = web3.currentProvider.publicConfigStore.on("update", c => {
+          if (init === true || get("web3_init") === true) {
+            init = false
+            fn(setETH)({ network, wallet })
+          }
+        })
+      }
     }
   } else {
     set(true, "web3_init")
@@ -188,6 +197,7 @@ export async function initWeb3({
     } else {
       if (window.ethereum) {
         provider = window.ethereum
+        provider.request({ method: "eth_requestAccounts" })
       } else if (window.web3) {
         provider = window.web3.currentProvider
       }
@@ -223,8 +233,11 @@ export async function initWeb3({
       set(true, "authereum_logging_in")
       await web3.currentProvider.enable()
       set(false, "authereum_logging_in")
-    }
-    fn(setETH)({ network, wallet })
+    } else if (
+      !isNil(web3.currentProvider) &&
+      web3.currentProvider.isConnected() === false
+    )
+      fn(setETH)({ network, wallet })
   }
   return
 }
@@ -262,7 +275,7 @@ async function listenTransaction({ method, args, eth, from, to, value }) {
   return [err, receipt]
 }
 
-export async function contract({ val: { abi, address }, get, global }) {
+export function contract({ val: { abi, address }, get, global }) {
   const contract = new global[`web3_${global.wallet_in_use}`].eth.Contract(
     abi,
     address
@@ -284,7 +297,7 @@ export async function contract({ val: { abi, address }, get, global }) {
   return methods
 }
 
-export async function erc20({ val: { token, address }, conf, fn }) {
+export function erc20({ val: { token, address }, conf, fn }) {
   const contract_address =
     xNil(token) && hasPath(["web3", "erc20", token])(conf)
       ? conf.web3.erc20[token]
@@ -292,7 +305,7 @@ export async function erc20({ val: { token, address }, conf, fn }) {
   return fn(contract)({ abi: abi_erc20, address: contract_address })
 }
 
-export async function eth({ fn, get, global }) {
+export function eth({ fn, get, global }) {
   let web3js = {
     balanceOf: address =>
       global[`web3_${global.wallet_in_use}`].eth.getBalance(
